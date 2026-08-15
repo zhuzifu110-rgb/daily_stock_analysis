@@ -72,6 +72,28 @@ def _is_us_code(stock_code: str) -> bool:
     return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
+def _resolve_tushare_http_url() -> Optional[str]:
+    """读取 ``TUSHARE_HTTP_URL`` 环境变量并做基本校验。
+
+    - 留空 / 仅空白 / 未设置 → 返回 ``None``，调用方继续走官方默认地址。
+    - 设置则去掉首尾空白后返回，并校验必须是 ``http://`` 或 ``https://`` 前缀，
+      避免有人误填成纯主机名（如 ``api.tushare.pro``）导致 ``requests`` 把它
+      当成相对路径请求失败。
+    """
+    raw = os.getenv("TUSHARE_HTTP_URL")
+    if not raw:
+        return None
+    url = raw.strip()
+    if not url:
+        return None
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError(
+            "TUSHARE_HTTP_URL 必须以 http:// 或 https:// 开头，"
+            f"当前值为 {url!r}"
+        )
+    return url
+
+
 class _TushareHttpClient:
     """Lightweight Tushare Pro client that does not require the tushare SDK."""
 
@@ -177,8 +199,17 @@ class TushareFetcher(BaseFetcher):
 
         The project already normalizes all Pro calls through the same request
         contract, so we do not need the official tushare SDK during runtime.
+
+        支持通过 ``TUSHARE_HTTP_URL`` 环境变量将请求指向自建或第三方兼容
+        端点，便于在网络无法直达 ``api.tushare.pro`` 时切换镜像/网关。
+        留空或不设置则保持官方默认地址，行为与历史版本完全一致。
         """
-        client = _TushareHttpClient(token=token)
+        api_url = _resolve_tushare_http_url()
+        if api_url:
+            logger.info("Tushare 使用自定义接入地址: %s", api_url)
+            client = _TushareHttpClient(token=token, api_url=api_url)
+        else:
+            client = _TushareHttpClient(token=token)
         logger.debug("Tushare API client configured for direct HTTP calls")
         return client
 
@@ -398,11 +429,11 @@ class TushareFetcher(BaseFetcher):
             return f"{code}.BJ"
         
         # Regular stocks
-        # Shanghai: 600xxx, 601xxx, 603xxx, 688xxx (STAR Market)
-        # Shenzhen: 000xxx, 002xxx, 300xxx (ChiNext)
-        if code.startswith(('600', '601', '603', '688')):
+        # Shanghai: 600xxx, 601xxx, 603xxx, 605xxx, 688xxx (STAR Market)
+        # Shenzhen: 000xxx, 001xxx, 002xxx, 003xxx, 300xxx, 301xxx (ChiNext)
+        if code.startswith(('600', '601', '603', '605', '688')):
             return f"{code}.SH"
-        elif code.startswith(('000', '002', '300')):
+        elif code.startswith(('000', '001', '002', '003', '300', '301')):
             return f"{code}.SZ"
         else:
             logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")
